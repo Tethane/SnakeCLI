@@ -31,6 +31,7 @@ int main(int argc, char *argv[]) {
   if (bh < MIN_BOARD_H)
     bh = MIN_BOARD_H;
   game_set_dimensions(bw, bh);
+  render_set_term_size(term_cols, term_rows);
 
   /* ── Cache directory from environment ───────────────────────── */
   const char *cache = getenv("SNAKE_CACHE");
@@ -69,15 +70,15 @@ int main(int argc, char *argv[]) {
     /* ── Start menu ─────────────────────────────────────────── */
     case SCR_START:
       if (key == 'w' || key == KEY_UP)
-        menu_sel = (menu_sel + 2) % 3;
+        menu_sel = (menu_sel + MENU_COUNT - 1) % MENU_COUNT;
       if (key == 's' || key == KEY_DOWN)
-        menu_sel = (menu_sel + 1) % 3;
+        menu_sel = (menu_sel + 1) % MENU_COUNT;
       if (key == KEY_ENTER || key == ' ') {
-        if (menu_sel == 0) {
+        if (menu_sel == 0) { /* New Game */
           game_init(&game);
           render_clear();
           screen = SCR_GAME;
-        } else if (menu_sel == 2) {
+        } else if (menu_sel == 1) { /* Quit     */
           running = 0;
         }
       }

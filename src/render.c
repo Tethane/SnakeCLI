@@ -3,28 +3,40 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── ANSI helpers ─────────────────────────────────────────── */
-#define CLR_RESET "\033[0m"
-#define CLR_BOLD "\033[1m"
-#define CLR_DIM "\033[2m"
-#define CLR_GREEN "\033[32m"
-#define CLR_CYAN "\033[36m"
-#define CLR_BRED "\033[91m"
-#define CLR_BGREEN "\033[92m"
-#define CLR_BYELLOW "\033[93m"
-#define CLR_BCYAN "\033[96m"
-#define CLR_BWHITE "\033[97m"
-#define CLR_WHITE "\033[37m"
+/* ── ANSI colour macros ──────────────────────────────────── */
+#define RST "\033[0m"
+#define BOLD "\033[1m"
+#define DIM "\033[2m"
+#define GREEN "\033[32m"
+#define CYAN "\033[36m"
+#define BRED "\033[91m"
+#define BGREEN "\033[92m"
+#define BYELLOW "\033[93m"
+#define BCYAN "\033[96m"
+#define BWHITE "\033[97m"
+#define WHITE "\033[37m"
 
 #define HOME "\033[H"
 #define CLEAR_SCR "\033[2J\033[H"
 #define HIDE_CUR "\033[?25l"
 #define SHOW_CUR "\033[?25h"
 
-/* Runtime display width: border + padding + cells + padding + border */
-#define DISP_W (board_w * 2 + 4)
+/* Synchronized Output — tells the terminal to hold rendering until
+   BSU_END, eliminating the top-line flicker on every game frame.
+   Terminals that don't understand these sequences ignore them.      */
+#define BSU_BEGIN "\033[?2026h"
+#define BSU_END "\033[?2026l"
 
-/* ── Output buffer ───────────────────────────────────────── */
+/* ── Runtime terminal dimensions ────────────────────────── */
+static int term_cols = 80;
+static int term_rows = 24;
+
+void render_set_term_size(int cols, int rows) {
+  term_cols = cols;
+  term_rows = rows;
+}
+
+/* ── Output buffer (single fwrite per frame) ─────────────── */
 #define BUF_SZ (1024 * 128)
 static char buf[BUF_SZ];
 static int bpos;
@@ -46,6 +58,36 @@ static void bputc(char c) {
     bflush();
   buf[bpos++] = c;
 }
+static void bnewline(void) { bputc('\n'); }
+
+/* ── Visual width ────────────────────────────────────────────
+   Count terminal display columns of a UTF-8 string.
+   Each code-point is 1 column (no CJK wide chars in our art).
+   We detect code-point boundaries by skipping UTF-8 continuation
+   bytes (10xxxxxx), which never start a new character.           */
+static int visual_width(const char *s) {
+  int w = 0;
+  while (*s) {
+    unsigned char c = (unsigned char)*s++;
+    if ((c & 0xC0) != 0x80)
+      w++; /* not a continuation byte */
+  }
+  return w;
+}
+
+/* ── Centring: pads `s` to be centred in `w` display columns ─
+   prefix / suffix are ANSI escape strings (zero visual width).  */
+static void centre(const char *pre, const char *s, const char *suf, int w) {
+  int pad = (w - visual_width(s)) / 2;
+  if (pad < 0)
+    pad = 0;
+  for (int i = 0; i < pad; i++)
+    bputc(' ');
+  bprint(pre);
+  bprint(s);
+  bprint(suf);
+  bnewline();
+}
 
 /* ── Cursor / clear ──────────────────────────────────────── */
 void render_hide_cursor(void) {
@@ -61,12 +103,11 @@ void render_clear(void) {
   fflush(stdout);
 }
 
-/* ── Cell grid — heap-allocated lazily at first use ─────── */
+/* ── Cell grid — heap-allocated lazily ───────────────────── */
 typedef enum { CELL_EMPTY, CELL_HEAD, CELL_BODY, CELL_APPLE } Cell;
 
 static Cell *grid = NULL;
-static int grid_w = 0;
-static int grid_h = 0;
+static int grid_w = 0, grid_h = 0;
 
 static void grid_ensure(void) {
   if (grid && grid_w == board_w && grid_h == board_h)
@@ -81,14 +122,11 @@ static void build_grid(const GameState *g) {
   grid_ensure();
   int sz = board_w * board_h;
   memset(grid, CELL_EMPTY, (size_t)sz * sizeof(Cell));
-
   grid[g->apple.y * board_w + g->apple.x] = CELL_APPLE;
-
   for (int i = g->snake.length - 1; i >= 0; i--) {
     int idx = (g->snake.head - i + sz) % sz;
-    int x = g->snake.body[idx].x;
-    int y = g->snake.body[idx].y;
-    grid[y * board_w + x] = (i == 0) ? CELL_HEAD : CELL_BODY;
+    grid[g->snake.body[idx].y * board_w + g->snake.body[idx].x] =
+        (i == 0) ? CELL_HEAD : CELL_BODY;
   }
 }
 
@@ -97,66 +135,56 @@ void render_game(const GameState *g, int high_score) {
   build_grid(g);
 
   bpos = 0;
+  bprint(BSU_BEGIN); /* begin synchronized frame — no partial renders */
   bprint(HOME);
 
   /* Top border */
-  bprint(CLR_BOLD CLR_CYAN "╔");
+  bprint(BOLD CYAN "╔");
   for (int x = 0; x < board_w * 2 + 2; x++)
     bprint("═");
   bprint("╗\n");
 
-  /* Rows */
+  /* Play rows */
   for (int y = 0; y < board_h; y++) {
-    bprint(CLR_BOLD CLR_CYAN "║ " CLR_RESET);
+    bprint(BOLD CYAN "║ " RST);
     for (int x = 0; x < board_w; x++) {
       switch (grid[y * board_w + x]) {
       case CELL_HEAD:
-        bprint(CLR_BOLD CLR_BGREEN "██" CLR_RESET);
+        bprint(BOLD BGREEN "██" RST);
         break;
       case CELL_BODY:
-        bprint(CLR_GREEN "▓▓" CLR_RESET);
+        bprint(GREEN "▓▓" RST);
         break;
       case CELL_APPLE:
-        bprint(CLR_BOLD CLR_BRED "◆◆" CLR_RESET);
+        bprint(BOLD BRED "◆◆" RST);
         break;
       default:
         bprint("  ");
         break;
       }
     }
-    bprint(CLR_BOLD CLR_CYAN " ║\n" CLR_RESET);
+    bprint(BOLD CYAN " ║\n" RST);
   }
 
   /* Bottom border */
-  bprint(CLR_BOLD CLR_CYAN "╚");
+  bprint(BOLD CYAN "╚");
   for (int x = 0; x < board_w * 2 + 2; x++)
     bprint("═");
-  bprint("╝\n" CLR_RESET);
+  bprint("╝\n" RST);
 
   /* HUD */
   char hud[256];
   snprintf(hud, sizeof hud,
-           " " CLR_BOLD CLR_BYELLOW "SCORE: %-4d" CLR_RESET
-           "  " CLR_DIM CLR_BWHITE "BEST: %-4d" CLR_RESET "  " CLR_DIM
-           "[ WASD / ↑↓←→ ]  [ Q quit ]\n" CLR_RESET,
+           " " BOLD BYELLOW "SCORE: %-4d" RST "  " DIM BWHITE "BEST: %-4d" RST
+           "  " DIM "[ WASD / ↑↓←→ ]  [ Q quit ]\n" RST,
            g->score, high_score);
   bprint(hud);
 
+  bprint(BSU_END); /* end synchronized frame */
   bflush();
 }
 
-/* ── Centring helper ─────────────────────────────────────── */
-static void centre_raw(const char *pre, const char *s, const char *suf, int w) {
-  int pad = (w - (int)strlen(s)) / 2;
-  for (int i = 0; i < pad; i++)
-    bputc(' ');
-  bprint(pre);
-  bprint(s);
-  bprint(suf);
-  bputc('\n');
-}
-
-/* ── ASCII title art ─────────────────────────────────────── */
+/* ── ASCII art ───────────────────────────────────────────── */
 static const char *TITLE[] = {
     " ██████╗ ███╗  ██╗ █████╗ ██╗  ██╗███████╗",
     "██╔════╝ ████╗ ██║██╔══██╗██║ ██╔╝██╔════╝",
@@ -167,50 +195,7 @@ static const char *TITLE[] = {
 };
 #define TITLE_LINES 6
 
-static const char *MENU_LABELS[] = {"▶  New Game", "   High Score", "   Quit"};
-#define MENU_COUNT 3
-
-void render_start_screen(int high_score, int sel) {
-  bpos = 0;
-  bprint(HOME);
-
-  int W = DISP_W;
-  bputc('\n');
-
-  for (int i = 0; i < TITLE_LINES; i++) {
-    const char *col =
-        (i == 0 || i == 5) ? CLR_BOLD CLR_BCYAN : CLR_BOLD CLR_BGREEN;
-    centre_raw(col, TITLE[i], CLR_RESET, W);
-  }
-  bputc('\n');
-
-  centre_raw(CLR_DIM CLR_WHITE, "~ terminal edition ~", CLR_RESET, W);
-  bputc('\n');
-
-  char hs[64];
-  snprintf(hs, sizeof hs, "★  All-time best: %d  ★", high_score);
-  centre_raw(CLR_BOLD CLR_BYELLOW, hs, CLR_RESET, W);
-  bputc('\n');
-  bputc('\n');
-
-  centre_raw(CLR_DIM CLR_CYAN, "─────────────────────────────", CLR_RESET, W);
-  bputc('\n');
-
-  for (int i = 0; i < MENU_COUNT; i++) {
-    const char *col = (i == sel) ? CLR_BOLD CLR_BGREEN : CLR_DIM CLR_WHITE;
-    centre_raw(col, MENU_LABELS[i], CLR_RESET, W);
-    bputc('\n');
-  }
-
-  bputc('\n');
-  centre_raw(CLR_DIM, "W/S or ↑/↓ to navigate · Enter to select", CLR_RESET, W);
-  bputc('\n');
-
-  bflush();
-}
-
-/* ── Game-over screen ────────────────────────────────────── */
-static const char *OVER[] = {
+static const char *OVER_ART[] = {
     "  ██████╗  █████╗ ███╗   ███╗███████╗",
     " ██╔════╝ ██╔══██╗████╗ ████║██╔════╝",
     " ██║  ███╗███████║██╔████╔██║█████╗  ",
@@ -226,38 +211,111 @@ static const char *OVER[] = {
 };
 #define OVER_LINES 12
 
-void render_game_over(int score, int high_score) {
+/* Two-item menu: index 0 = New Game, index 1 = Quit */
+static const char *MENU_ITEMS[MENU_COUNT] = {"New Game", "Quit"};
+
+/* ── Vertical padding helper: blank lines to centre content ─ */
+static void vpad(int content_lines) {
+  int pad = (term_rows - content_lines) / 2;
+  if (pad < 1)
+    pad = 1;
+  for (int i = 0; i < pad; i++)
+    bnewline();
+}
+
+/* ── Start screen ────────────────────────────────────────── */
+void render_start_screen(int high_score, int sel) {
+  /* Content line count:
+     6 title + 1 gap + 1 tagline + 1 gap + 1 high-score + 2 gap
+     + 1 sep + 1 gap + 2 menu (×2 with spacer) + 1 gap + 1 hint = 18 */
+  const int CONTENT_H = 18;
+
   bpos = 0;
+  bprint(BSU_BEGIN);
   bprint(HOME);
 
-  int W = DISP_W;
-  bputc('\n');
-  bputc('\n');
+  int W = term_cols;
+
+  vpad(CONTENT_H);
+
+  /* Title */
+  for (int i = 0; i < TITLE_LINES; i++) {
+    const char *col = (i == 0 || i == 5) ? BOLD BCYAN : BOLD BGREEN;
+    centre(col, TITLE[i], RST, W);
+  }
+  bnewline();
+
+  /* Tagline */
+  centre(DIM WHITE, "~ terminal edition ~", RST, W);
+  bnewline();
+
+  /* High score */
+  char hs[64];
+  snprintf(hs, sizeof hs, "★  All-time best: %d  ★", high_score);
+  centre(BOLD BYELLOW, hs, RST, W);
+  bnewline();
+  bnewline();
+
+  /* Separator */
+  centre(DIM CYAN, "───────────────────────────────", RST, W);
+  bnewline();
+
+  /* Menu items */
+  for (int i = 0; i < MENU_COUNT; i++) {
+    /* Build label with cursor indicator */
+    char label[64];
+    if (i == sel)
+      snprintf(label, sizeof label, "▶  %s", MENU_ITEMS[i]);
+    else
+      snprintf(label, sizeof label, "   %s", MENU_ITEMS[i]);
+
+    const char *col = (i == sel) ? BOLD BGREEN : DIM WHITE;
+    centre(col, label, RST, W);
+    bnewline();
+  }
+
+  /* Nav hint */
+  centre(DIM, "W/S  ↑/↓  navigate    Enter  select    Q  quit", RST, W);
+
+  bprint(BSU_END);
+  bflush();
+}
+
+/* ── Game-over screen ────────────────────────────────────── */
+void render_game_over(int score, int high_score) {
+  /* Content lines: 12 art + 1 gap + 1 score + 1 best + 2 gap + 1 hint = 18 */
+  const int CONTENT_H = 18;
+
+  bpos = 0;
+  bprint(BSU_BEGIN);
+  bprint(HOME);
+
+  int W = term_cols;
+
+  vpad(CONTENT_H);
 
   for (int i = 0; i < OVER_LINES; i++) {
-    const char *col = (i < 6) ? CLR_BOLD CLR_BRED : CLR_BOLD CLR_BWHITE;
-    centre_raw(col, OVER[i], CLR_RESET, W);
+    const char *col = (i < 6) ? BOLD BRED : BOLD BWHITE;
+    centre(col, OVER_ART[i], RST, W);
   }
-  bputc('\n');
+  bnewline();
 
   char sc[64];
   snprintf(sc, sizeof sc, "Score: %d", score);
-  centre_raw(CLR_BOLD CLR_BYELLOW, sc, CLR_RESET, W);
-  bputc('\n');
+  centre(BOLD BYELLOW, sc, RST, W);
 
   if (score >= high_score && score > SNAKE_INIT_LEN)
-    centre_raw(CLR_BOLD CLR_BCYAN, "✦  New High Score!  ✦", CLR_RESET, W);
+    centre(BOLD BCYAN, "✦  New High Score!  ✦", RST, W);
   else {
     char best[64];
     snprintf(best, sizeof best, "Best: %d", high_score);
-    centre_raw(CLR_DIM CLR_WHITE, best, CLR_RESET, W);
+    centre(DIM WHITE, best, RST, W);
   }
 
-  bputc('\n');
-  bputc('\n');
-  centre_raw(CLR_DIM, "Press any key to return to menu  ·  Q to quit",
-             CLR_RESET, W);
-  bputc('\n');
+  bnewline();
+  bnewline();
+  centre(DIM, "Press any key to return  ·  Q to quit", RST, W);
 
+  bprint(BSU_END);
   bflush();
 }
