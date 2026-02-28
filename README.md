@@ -22,9 +22,18 @@ playable at 60 FPS, with persistent high-score caching.
 
 ## Quick Start
 
+Clone the repository
+
 ```bash
-chmod +x ~/.fun/snake/snake
-~/.fun/snake/snake
+git clone https://github.com/Tethane/SnakeCLI.git
+cd snake
+```
+
+Once inside the cloned repository
+
+```bash
+chmod +x snake
+./snake
 ```
 
 The launcher auto-compiles the project with CMake on the first run.
@@ -51,7 +60,7 @@ Subsequent launches skip the build step unless source files have changed.
 ## Project Layout
 
 ```
-~/.fun/snake/
+/snake/
 ├── snake              # Bash launcher (build + run)
 ├── CMakeLists.txt     # CMake build definition
 ├── README.md
