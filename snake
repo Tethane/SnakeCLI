@@ -2,7 +2,7 @@
 # ─────────────────────────────────────────────────────────────
 #  snake  —  terminal snake launcher
 #  Builds the project with CMake on first run (or if stale),
-#  then launches the game in the current terminal session.
+#  then launches the game sized to the current terminal window.
 # ─────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -12,31 +12,32 @@ BUILD_DIR="$SCRIPT_DIR/build"
 BIN="$SCRIPT_DIR/bin/snake"
 CACHE_DIR="$SCRIPT_DIR/cache"
 
-# Ensure cache directory exists
 mkdir -p "$CACHE_DIR"
 
-# ── Build if binary is missing or sources are newer ──────────
+# ── Build if binary is missing or any source is newer ────────
 needs_build() {
-    [[ ! -f "$BIN" ]] && return 0
-    for src in "$SCRIPT_DIR"/src/*.c "$SCRIPT_DIR"/src/*.h \
-               "$SCRIPT_DIR"/CMakeLists.txt; do
-        [[ "$src" -nt "$BIN" ]] && return 0
-    done
-    return 1
+  [[ ! -f "$BIN" ]] && return 0
+  for src in "$SCRIPT_DIR"/src/*.c "$SCRIPT_DIR"/src/*.h \
+    "$SCRIPT_DIR"/CMakeLists.txt; do
+    [[ "$src" -nt "$BIN" ]] && return 0
+  done
+  return 1
 }
 
 if needs_build; then
-    echo -e "\033[1;36m[snake]\033[0m Building… (this only happens once)"
-    mkdir -p "$BUILD_DIR"
-    cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_INSTALL_PREFIX="$SCRIPT_DIR" > /dev/null 2>&1
-    cmake --build "$BUILD_DIR" --parallel "$(nproc)" 2>&1 | \
-        grep -v "^--\|^\[" || true
-    echo -e "\033[1;32m[snake]\033[0m Build complete."
-    sleep 0.4
+  echo -e "\033[1;36m[snake]\033[0m Building… (this only happens once)"
+  mkdir -p "$BUILD_DIR"
+  cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
+    >/dev/null 2>&1
+  cmake --build "$BUILD_DIR" --parallel "$(nproc)" 2>&1 |
+    grep -v "^--\|^\[" || true
+  echo -e "\033[1;32m[snake]\033[0m Build complete."
+  sleep 0.4
 fi
 
-# ── Launch ───────────────────────────────────────────────────
-export SNAKE_CACHE="$CACHE_DIR"
-exec "$BIN"
+# ── Read terminal dimensions and pass to the game binary ─────
+TERM_COLS=$(tput cols)
+TERM_ROWS=$(tput lines)
 
+export SNAKE_CACHE="$CACHE_DIR"
+exec "$BIN" "$TERM_COLS" "$TERM_ROWS"

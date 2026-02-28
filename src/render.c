@@ -7,29 +7,25 @@
 #define CLR_RESET "\033[0m"
 #define CLR_BOLD "\033[1m"
 #define CLR_DIM "\033[2m"
-#define CLR_BLACK "\033[30m"
-#define CLR_RED "\033[31m"
 #define CLR_GREEN "\033[32m"
-#define CLR_YELLOW "\033[33m"
 #define CLR_CYAN "\033[36m"
-#define CLR_WHITE "\033[37m"
 #define CLR_BRED "\033[91m"
 #define CLR_BGREEN "\033[92m"
 #define CLR_BYELLOW "\033[93m"
 #define CLR_BCYAN "\033[96m"
 #define CLR_BWHITE "\033[97m"
+#define CLR_WHITE "\033[37m"
 
 #define HOME "\033[H"
 #define CLEAR_SCR "\033[2J\033[H"
 #define HIDE_CUR "\033[?25l"
 #define SHOW_CUR "\033[?25h"
 
-/* Each board cell renders as 2 chars wide → total display width:
-   2 border cols + BOARD_W*2 + 2 border cols = BOARD_W*2 + 4          */
-#define DISP_W (BOARD_W * 2 + 4)
+/* Runtime display width: border + padding + cells + padding + border */
+#define DISP_W (board_w * 2 + 4)
 
-/* Large output buffer written in a single fwrite per frame            */
-#define BUF_SZ (1024 * 64)
+/* ── Output buffer ───────────────────────────────────────── */
+#define BUF_SZ (1024 * 128)
 static char buf[BUF_SZ];
 static int bpos;
 
@@ -39,10 +35,10 @@ static void bflush(void) {
   bpos = 0;
 }
 static void bprint(const char *s) {
-  int l = strlen(s);
+  int l = (int)strlen(s);
   if (bpos + l >= BUF_SZ)
     bflush();
-  memcpy(buf + bpos, s, l);
+  memcpy(buf + bpos, s, (size_t)l);
   bpos += l;
 }
 static void bputc(char c) {
@@ -65,23 +61,34 @@ void render_clear(void) {
   fflush(stdout);
 }
 
-/* ── Cell grid helpers ───────────────────────────────────── */
-typedef enum { CELL_EMPTY, CELL_WALL, CELL_HEAD, CELL_BODY, CELL_APPLE } Cell;
+/* ── Cell grid — heap-allocated lazily at first use ─────── */
+typedef enum { CELL_EMPTY, CELL_HEAD, CELL_BODY, CELL_APPLE } Cell;
 
-static Cell grid[BOARD_H][BOARD_W];
+static Cell *grid = NULL;
+static int grid_w = 0;
+static int grid_h = 0;
+
+static void grid_ensure(void) {
+  if (grid && grid_w == board_w && grid_h == board_h)
+    return;
+  free(grid);
+  grid = malloc((size_t)(board_w * board_h) * sizeof(Cell));
+  grid_w = board_w;
+  grid_h = board_h;
+}
 
 static void build_grid(const GameState *g) {
-  memset(grid, CELL_EMPTY, sizeof grid);
+  grid_ensure();
+  int sz = board_w * board_h;
+  memset(grid, CELL_EMPTY, (size_t)sz * sizeof(Cell));
 
-  /* Apple */
-  grid[g->apple.y][g->apple.x] = CELL_APPLE;
+  grid[g->apple.y * board_w + g->apple.x] = CELL_APPLE;
 
-  /* Snake body (tail → head) */
   for (int i = g->snake.length - 1; i >= 0; i--) {
-    int idx = (g->snake.head - i + MAX_SNAKE) % MAX_SNAKE;
+    int idx = (g->snake.head - i + sz) % sz;
     int x = g->snake.body[idx].x;
     int y = g->snake.body[idx].y;
-    grid[y][x] = (i == 0) ? CELL_HEAD : CELL_BODY;
+    grid[y * board_w + x] = (i == 0) ? CELL_HEAD : CELL_BODY;
   }
 }
 
@@ -92,18 +99,17 @@ void render_game(const GameState *g, int high_score) {
   bpos = 0;
   bprint(HOME);
 
-  /* ── Top border ── */
-  bprint(CLR_BOLD CLR_CYAN);
-  bprint("╔");
-  for (int x = 0; x < BOARD_W * 2 + 2; x++)
+  /* Top border */
+  bprint(CLR_BOLD CLR_CYAN "╔");
+  for (int x = 0; x < board_w * 2 + 2; x++)
     bprint("═");
   bprint("╗\n");
 
-  /* ── Rows ── */
-  for (int y = 0; y < BOARD_H; y++) {
+  /* Rows */
+  for (int y = 0; y < board_h; y++) {
     bprint(CLR_BOLD CLR_CYAN "║ " CLR_RESET);
-    for (int x = 0; x < BOARD_W; x++) {
-      switch (grid[y][x]) {
+    for (int x = 0; x < board_w; x++) {
+      switch (grid[y * board_w + x]) {
       case CELL_HEAD:
         bprint(CLR_BOLD CLR_BGREEN "██" CLR_RESET);
         break;
@@ -121,14 +127,14 @@ void render_game(const GameState *g, int high_score) {
     bprint(CLR_BOLD CLR_CYAN " ║\n" CLR_RESET);
   }
 
-  /* ── Bottom border ── */
+  /* Bottom border */
   bprint(CLR_BOLD CLR_CYAN "╚");
-  for (int x = 0; x < BOARD_W * 2 + 2; x++)
+  for (int x = 0; x < board_w * 2 + 2; x++)
     bprint("═");
   bprint("╝\n" CLR_RESET);
 
-  /* ── HUD ── */
-  char hud[128];
+  /* HUD */
+  char hud[256];
   snprintf(hud, sizeof hud,
            " " CLR_BOLD CLR_BYELLOW "SCORE: %-4d" CLR_RESET
            "  " CLR_DIM CLR_BWHITE "BEST: %-4d" CLR_RESET "  " CLR_DIM
@@ -139,7 +145,18 @@ void render_game(const GameState *g, int high_score) {
   bflush();
 }
 
-/* ── ASCII art title ─────────────────────────────────────── */
+/* ── Centring helper ─────────────────────────────────────── */
+static void centre_raw(const char *pre, const char *s, const char *suf, int w) {
+  int pad = (w - (int)strlen(s)) / 2;
+  for (int i = 0; i < pad; i++)
+    bputc(' ');
+  bprint(pre);
+  bprint(s);
+  bprint(suf);
+  bputc('\n');
+}
+
+/* ── ASCII title art ─────────────────────────────────────── */
 static const char *TITLE[] = {
     " ██████╗ ███╗  ██╗ █████╗ ██╗  ██╗███████╗",
     "██╔════╝ ████╗ ██║██╔══██╗██║ ██╔╝██╔════╝",
@@ -149,77 +166,39 @@ static const char *TITLE[] = {
     "╚═════╝  ╚═╝  ╚══╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝",
 };
 #define TITLE_LINES 6
-#define TITLE_W 44 /* visual width of title art */
 
-/* Centre a string in a field of width `w` (pad with spaces) — kept for
-   potential future use but not currently referenced from exported API. */
-static void __attribute__((unused)) centre(const char *s, int w) {
-  int len = strlen(s);
-  int pad = (w - len) / 2;
-  for (int i = 0; i < pad; i++)
-    bputc(' ');
-  bprint(s);
-  bputc('\n');
-}
-
-static void centre_raw(const char *prefix, const char *s, const char *suffix,
-                       int w) {
-  /* prefix/suffix are ANSI codes that don't count toward visual width */
-  int len = strlen(s);
-  int pad = (w - len) / 2;
-  for (int i = 0; i < pad; i++)
-    bputc(' ');
-  bprint(prefix);
-  bprint(s);
-  bprint(suffix);
-  bputc('\n');
-}
-
-/* ── Start screen ────────────────────────────────────────── */
 static const char *MENU_LABELS[] = {"▶  New Game", "   High Score", "   Quit"};
-static const int MENU_COUNT = 3;
+#define MENU_COUNT 3
 
 void render_start_screen(int high_score, int sel) {
   bpos = 0;
   bprint(HOME);
 
-  int W = DISP_W; /* ~80 cols */
-
-  /* blank buffer line */
+  int W = DISP_W;
   bputc('\n');
 
-  /* Title art */
   for (int i = 0; i < TITLE_LINES; i++) {
-    if (i == 0 || i == 5)
-      centre_raw(CLR_BOLD CLR_BCYAN, TITLE[i], CLR_RESET, W);
-    else
-      centre_raw(CLR_BOLD CLR_BGREEN, TITLE[i], CLR_RESET, W);
+    const char *col =
+        (i == 0 || i == 5) ? CLR_BOLD CLR_BCYAN : CLR_BOLD CLR_BGREEN;
+    centre_raw(col, TITLE[i], CLR_RESET, W);
   }
-
   bputc('\n');
 
-  /* Sub-tagline */
   centre_raw(CLR_DIM CLR_WHITE, "~ terminal edition ~", CLR_RESET, W);
   bputc('\n');
 
-  /* High score badge */
   char hs[64];
   snprintf(hs, sizeof hs, "★  All-time best: %d  ★", high_score);
   centre_raw(CLR_BOLD CLR_BYELLOW, hs, CLR_RESET, W);
   bputc('\n');
   bputc('\n');
 
-  /* Separator */
   centre_raw(CLR_DIM CLR_CYAN, "─────────────────────────────", CLR_RESET, W);
   bputc('\n');
 
-  /* Menu items */
   for (int i = 0; i < MENU_COUNT; i++) {
-    if (i == sel) {
-      centre_raw(CLR_BOLD CLR_BGREEN, MENU_LABELS[i], CLR_RESET, W);
-    } else {
-      centre_raw(CLR_DIM CLR_WHITE, MENU_LABELS[i], CLR_RESET, W);
-    }
+    const char *col = (i == sel) ? CLR_BOLD CLR_BGREEN : CLR_DIM CLR_WHITE;
+    centre_raw(col, MENU_LABELS[i], CLR_RESET, W);
     bputc('\n');
   }
 
@@ -256,12 +235,9 @@ void render_game_over(int score, int high_score) {
   bputc('\n');
 
   for (int i = 0; i < OVER_LINES; i++) {
-    if (i < 6)
-      centre_raw(CLR_BOLD CLR_BRED, OVER[i], CLR_RESET, W);
-    else
-      centre_raw(CLR_BOLD CLR_BWHITE, OVER[i], CLR_RESET, W);
+    const char *col = (i < 6) ? CLR_BOLD CLR_BRED : CLR_BOLD CLR_BWHITE;
+    centre_raw(col, OVER[i], CLR_RESET, W);
   }
-
   bputc('\n');
 
   char sc[64];
@@ -269,12 +245,12 @@ void render_game_over(int score, int high_score) {
   centre_raw(CLR_BOLD CLR_BYELLOW, sc, CLR_RESET, W);
   bputc('\n');
 
-  if (score >= high_score && score > SNAKE_INIT_LEN) {
+  if (score >= high_score && score > SNAKE_INIT_LEN)
     centre_raw(CLR_BOLD CLR_BCYAN, "✦  New High Score!  ✦", CLR_RESET, W);
-  } else {
-    char hs[64];
-    snprintf(hs, sizeof hs, "Best: %d", high_score);
-    centre_raw(CLR_DIM CLR_WHITE, hs, CLR_RESET, W);
+  else {
+    char best[64];
+    snprintf(best, sizeof best, "Best: %d", high_score);
+    centre_raw(CLR_DIM CLR_WHITE, best, CLR_RESET, W);
   }
 
   bputc('\n');
