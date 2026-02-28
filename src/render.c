@@ -172,11 +172,12 @@ void render_game(const GameState *g, int high_score) {
     bprint("═");
   bprint("╝\n" RST);
 
-  /* HUD */
+  /* HUD — no trailing \n: emitting \n on the last terminal row scrolls
+     the viewport up one line, pushing the top border off screen.      */
   char hud[256];
   snprintf(hud, sizeof hud,
            " " BOLD BYELLOW "SCORE: %-4d" RST "  " DIM BWHITE "BEST: %-4d" RST
-           "  " DIM "[ WASD / ↑↓←→ ]  [ Q quit ]\n" RST,
+           "  " DIM "[ WASD / ↑↓←→ ]  [ Q quit ]" RST,
            g->score, high_score);
   bprint(hud);
 
